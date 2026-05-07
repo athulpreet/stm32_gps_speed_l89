@@ -1,0 +1,100 @@
+#include "stm32f10x.h"
+
+// --- Prototypes ---
+void Clock_Init_72MHz(void);
+void UART1_Init_115200(void);
+void UART2_Init_115200(void);
+void UART1_SendString(char* str);
+void UART2_SendChar(char c);
+void UART2_SendString(char* str);
+
+void Delay_ms(uint32_t ms) {
+    for(volatile uint32_t i = 0; i < ms * 8000; i++);
+}
+
+int main(void) {
+    Clock_Init_72MHz();
+    UART1_Init_115200(); // L89H Connection (PA9/PA10)
+    UART2_Init_115200(); // PC Debug Connection (PA2/PA3)
+
+    UART2_SendString("\r\n=== L89H 115200 START ===\r\n");
+    Delay_ms(2000); // Wait for module to stabilize
+
+    // 1. Set 5Hz Update Rate (200ms)
+    // Response should be: $PAIR001,050,0*3F
+    UART2_SendString("> Setting 5Hz (200ms)...\r\n");
+    UART1_SendString("$PAIR050,200*21\r\n"); 
+    Delay_ms(300);
+
+    // 2. Disable unnecessary NMEA sentences to save bandwidth
+    UART2_SendString("> Disabling extra NMEA...\r\n");
+    UART1_SendString("$PAIR062,0,0*3E\r\n"); Delay_ms(100); // GGA Off
+    UART1_SendString("$PAIR062,1,0*3F\r\n"); Delay_ms(100); // GLL Off
+    UART1_SendString("$PAIR062,2,0*3C\r\n"); Delay_ms(100); // GSA Off
+    UART1_SendString("$PAIR062,3,0*3D\r\n"); Delay_ms(100); // GSV Off
+    UART1_SendString("$PAIR062,5,0*3B\r\n"); Delay_ms(100); // VTG Off
+    
+    // 3. Ensure RMC is enabled (usually the primary sentence needed)
+    UART1_SendString("$PAIR062,4,1*39\r\n"); 
+    Delay_ms(100);
+
+    // 4. Save to Flash (Permanent)
+    UART2_SendString("> Saving configuration...\r\n");
+    UART1_SendString("$PAIR513*3D\r\n");
+    Delay_ms(500);
+
+    UART2_SendString("=== CONFIG DONE. MONITORING NMEA ===\r\n");
+
+    while (1) {
+        // Simple bridge: Forward L89H data to PC
+        if (USART1->SR & USART_SR_RXNE) {
+            UART2_SendChar((char)USART1->DR);
+        }
+    }
+}
+
+// --- Driver Functions ---
+
+void Clock_Init_72MHz(void) {
+    RCC->CR |= RCC_CR_HSEON;
+    while (!(RCC->CR & RCC_CR_HSERDY));
+    FLASH->ACR |= FLASH_ACR_LATENCY_2;
+    RCC->CFGR |= (RCC_CFGR_PLLSRC_HSE | RCC_CFGR_PLLMULL9);
+    RCC->CR |= RCC_CR_PLLON;
+    while (!(RCC->CR & RCC_CR_PLLRDY));
+    RCC->CFGR |= RCC_CFGR_SW_PLL;
+    while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_PLL);
+}
+
+void UART1_Init_115200(void) {
+    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_USART1EN;
+    GPIOA->CRH &= ~(0xFF << 4);
+    GPIOA->CRH |= (0x4B << 4); 
+    USART1->BRR = 72000000 / 115200; // 0x271
+    USART1->CR1 = (USART_CR1_UE | USART_CR1_TE | USART_CR1_RE);
+}
+
+void UART2_Init_115200(void) {
+    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN;
+    RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
+    GPIOA->CRL &= ~(0xFF << 8);
+    GPIOA->CRL |= (0x4B << 8); 
+    USART2->BRR = 36000000 / 115200; // 0x139
+    USART2->CR1 = (USART_CR1_UE | USART_CR1_TE | USART_CR1_RE);
+}
+
+void UART1_SendString(char* str) {
+    while(*str) {
+        while (!(USART1->SR & USART_SR_TXE));
+        USART1->DR = *str++;
+    }
+}
+
+void UART2_SendChar(char c) {
+    while (!(USART2->SR & USART_SR_TXE));
+    USART2->DR = c;
+}
+
+void UART2_SendString(char* str) {
+    while(*str) UART2_SendChar(*str++);
+}
